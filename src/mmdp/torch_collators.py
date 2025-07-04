@@ -1,0 +1,89 @@
+import torch
+
+
+class BaseCollator(object):
+    def __init__(self, tokenizer):
+        self.tokenizer = tokenizer
+
+    def _pad_batch(self, batch, max_length):
+        batch["input_ids"] = [
+            torch.nn.functional.pad(
+                ids, (max_length - len(ids), 0), value=self.tokenizer.pad_token_id
+            )
+            for ids in batch["input_ids"]
+        ]
+        batch["labels"] = [
+            torch.nn.functional.pad(labels, (max_length - len(labels), 0), value=-100)
+            for labels in batch["labels"]
+        ]
+        batch["attention_mask"] = [
+            torch.nn.functional.pad(
+                attention_mask, (max_length - len(attention_mask), 0), value=0
+            )
+            for attention_mask in batch["attention_mask"]
+        ]
+
+    def prepare_batch(self, batch, max_length=None):
+        # batch is a list of dicts, each containing
+        # "input_ids": Tensor
+        # "attention_mask": Tensor
+        # "labels": Tensor
+        # "image": Tensor
+        # We will first convert the batch into a dictionary of lists
+        batch = {
+            key: [item[key] for item in batch]
+            for key in ["input_ids", "attention_mask", "labels", "image"]
+        }
+
+        if max_length is not None:
+            batch = self._discard_samples_that_are_too_long(batch, max_length)
+
+        # Pad samples to max length
+        if max_length is not None:
+            max_len = max_length
+        else:
+            # Compute the maximum sequence length in the minibatch
+            max_len = max(map(len, batch["input_ids"]))
+        self._pad_batch(batch, max_len)
+
+        return {
+            "input_ids": torch.stack(batch["input_ids"]),
+            "attention_masks": torch.stack(batch["attention_mask"]),
+            "images": torch.stack(batch["image"]),
+            "labels": torch.stack(batch["labels"]),
+        }
+
+    def _discard_samples_that_are_too_long(self, batch, max_length):
+        filtered = [
+            (ids, label, attn, img)
+            for ids, label, attn, img in zip(
+                batch["input_ids"],
+                batch["labels"],
+                batch["attention_mask"],
+                batch["image"],
+            )
+            if len(ids) <= max_length
+        ]
+        if not filtered:
+            return [], [], [], []
+        batch_token_ids, batch_labels, batch_attentions, batch_images = zip(*filtered)
+        return {
+            "input_ids": list(batch_token_ids),
+            "labels": list(batch_labels),
+            "attention_mask": list(batch_attentions),
+            "image": list(batch_images),
+        }
+
+class NaiveCollator(BaseCollator):
+    def __call__(self, batch):
+        batch = self.prepare_batch(batch=batch)
+        return batch
+
+class VQACollator(BaseCollator):  # Visual Question Answering Collator
+    def __init__(self, tokenizer, max_length):
+        self.max_length = max_length
+        super().__init__(tokenizer)
+
+    def __call__(self, batch):
+        batch = self.prepare_batch(batch, max_length=self.max_length)
+        return batch

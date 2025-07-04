@@ -1,0 +1,14 @@
+vit_img_size = 256
+lm_tokenizer = "HuggingFaceTB/SmolLM2-360M-Instruct"
+vlm_extra_tokens = {"image_token": "<|image|>"}
+lm_chat_template = "{% for message in messages %}{{'<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}{% endfor %}{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
+train_dataset_path = "HuggingFaceM4/the_cauldron"
+train_dataset_name = "ai2d"
+data_cutoff_idx = 50
+val_ratio = 0.10
+image_token_length = 64
+max_sample_length: int = 1024
+lm_max_length: int = 1024
+batch_size: int = 16
+max_images_per_example: int = 4
+max_images_per_knapsack: int = 18
