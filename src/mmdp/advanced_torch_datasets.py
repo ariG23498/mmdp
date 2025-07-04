@@ -1,49 +1,46 @@
-import itertools
 import random
 import threading
 from queue import Queue
-from typing import Iterator
+from typing import Iterator, List
 
 import torch
-from torch.utils.data import IterableDataset, get_worker_info
-from typing import List
+from torch.utils.data import IterableDataset
 
-random.seed(42)  # Set the random seed to the meaning of life for good luck
+random.seed(42)  # Set the random seed for reproducibility
 
 
 class NaiveConstantLengthDataset(IterableDataset):
     """
-    Wraps a `VQADataset` (or any map-style dataset that yields dicts with
-    input_ids / labels / attention_mask / images) and emits *constant-length*
-    training chunks built with a greedy knapsack algorithm.
+    Wraps a map-style dataset to create an iterable dataset of constant-length
+    training chunks. This is achieved by greedily packing variable-length
+    samples into fixed-size chunks using a knapsack-like algorithm.
 
-    Parameters
-    ----------
-    dataset : torch.utils.data.Dataset
-        The *tokenised* + *image-processed* base dataset (e.g. `VQADataset`).
-    seq_length : int
-        Target context length of each output chunk.
-    num_sequences : int
-        How many `seq_length` chunks to accumulate in one buffer before packing.
-        Higher → better packing at the cost of more RAM / CPU time.
-    max_sample_length : int
-        Discard any raw sample whose tokenised length >= this value.
-    max_images_per_example : int
-        Discard samples with more than this many images.
-    max_images_per_knapsack : int
-        Upper bound on total images *inside one packed chunk*.
-    delta : int
-        Slack bins for the knapsack heuristic (larger delta → faster, slightly
-        worse packing).
-    infinite : bool
-        If True, restart the base iterator when exhausted (useful for endless
-        training).  Increments `self.epoch` each pass.
+    This "naive" version performs all data fetching, processing, and packing
+    within the main dataloader worker's iteration loop.
+
+    Args:
+        dataset (torch.utils.data.Dataset): The base dataset, which should be
+            tokenized and have image processing applied (e.g., `VQADataset`).
+        seq_length (int): The target sequence length for each packed chunk.
+        num_sequences (int): The number of sequences to buffer before packing.
+            A larger buffer can lead to better packing efficiency at the cost of
+            increased memory usage.
+        max_sample_length (int): Raw samples with tokenized lengths greater
+            than this value will be discarded.
+        max_images_per_example (int): Samples with more images than this value
+            will be discarded.
+        max_images_per_knapsack (int): The maximum total number of images
+            allowed within a single packed chunk.
+        delta (int): An adjustment factor for the number of bins in the
+            knapsack algorithm. A larger delta can speed up packing at the cost
+            of slightly lower efficiency.
+        infinite (bool): If True, the dataset will loop indefinitely. The
+            `self.epoch` attribute is incremented on each pass.
     """
 
     def __init__(
         self,
         dataset,
-        *,
         seq_length: int = 1024,
         num_sequences: int = 1024,
         max_sample_length: int = 1024,
@@ -61,101 +58,80 @@ class NaiveConstantLengthDataset(IterableDataset):
         self.max_images_per_knapsack = max_images_per_knapsack
         self.delta = delta
         self.infinite = infinite
-        self.epoch = 0  # only increases when infinite=True
+        self.epoch = 0
 
-        # crude length estimate (for __len__) → average text length + image tokens
-        self._avg_tokens_per_sample = (
-            self.dataset.image_token_length + 198
-        )  # 198 = empirical for Cauldron
-
-    # --------------------------------------------------------------------- #
-    # PyTorch bookkeeping
-    # --------------------------------------------------------------------- #
-    def __len__(self):
-        return int(len(self.dataset) * self._avg_tokens_per_sample / self.seq_length)
-
-    # --------------------------------------------------------------------- #
-    # Iterator
-    # --------------------------------------------------------------------- #
     def __iter__(self):
-        """Yield constant-length packed samples forever (or once if not infinite)."""
-        worker_info = get_worker_info()
-        worker_id = worker_info.id if worker_info else 0
-        num_workers = worker_info.num_workers if worker_info else 1
-
-        def make_base_iter():
-            indices = range(len(self.dataset))
-            # shard indices across workers (handles num_workers > 1)
-            if num_workers > 1:
-                indices = itertools.islice(indices, worker_id, None, num_workers)
-            for i in indices:
-                yield self.dataset[i]
-
-        iterator = make_base_iter()
+        """Yields constant-length packed samples."""
+        iterator = iter(self.dataset)
 
         while True:
-            # 1) Fill a buffer with raw samples until token budget reached
-            buffer: List[dict] = []
-            buf_len = 0
-            while buf_len < self.max_length:
-                try:
-                    sample = next(iterator)
-                except StopIteration:
-                    if self.infinite:
-                        iterator = make_base_iter()
-                        self.epoch += 1
-                        continue
-                    else:
-                        # done → flush what we have and exit outer loop
-                        break
-
-                if len(sample["input_ids"]) >= self.max_sample_length:
-                    continue  # too long
-                if len(sample["images"]) > self.max_images_per_example:
-                    continue  # too many images
-
-                # append a separator token so concatenated samples remain distinct
-                sep_id = self.dataset.tokenizer.pad_token_id
-                sample["input_ids"] = torch.cat(
-                    [sample["input_ids"], torch.tensor([sep_id])]
-                )
-                sample["attention_mask"] = torch.cat(
-                    [sample["attention_mask"], torch.tensor([0])]
-                )
-                sample["labels"] = torch.cat(
-                    [sample["labels"], torch.tensor([-100])]
-                )
-
-                buffer.append(sample)
-                buf_len += len(sample["input_ids"])
+            buffer, buffer_len = self._fill_buffer(iterator)
 
             if not buffer:
-                break  # nothing left
+                if not self.infinite:
+                    break
+                iterator = iter(self.dataset)
+                self.epoch += 1
+                continue
 
-            # 2) Greedy knapsack → list of groups (each fits seq_length + img cap)
-            groups = self._balanced_greedy_knapsack(
-                buffer,
-                L=self.seq_length,
-                delta=self.delta,
-                max_images_per_knapsack=self.max_images_per_knapsack,
-            )
+            groups = self._pack_buffer(buffer)
 
-            # 3) Pack each group into a constant-length chunk and yield
-            for g in groups:
-                ids, lbl, attn, imgs = self._pack_one_group(g, buffer, self.seq_length)
-                yield {
-                    "input_ids": ids,
-                    "labels": lbl,
-                    "attention_mask": attn,
-                    "images": imgs,
-                }
+            for group in groups:
+                yield self._format_group(group, buffer)
 
-            if not self.infinite:
-                break  # run only once when infinite=False
+            if not self.infinite and not buffer:
+                break
 
-    # --------------------------------------------------------------------- #
-    # Packing helpers
-    # --------------------------------------------------------------------- #
+    def _fill_buffer(self, iterator):
+        """Fills a buffer with samples from the dataset iterator."""
+        buffer: List[dict] = []
+        buffer_len = 0
+        while buffer_len < self.max_length:
+            try:
+                sample = next(iterator)
+            except StopIteration:
+                break
+
+            if (
+                len(sample["input_ids"]) >= self.max_sample_length
+                or len(sample["images"]) > self.max_images_per_example
+            ):
+                continue
+
+            self._add_separator_token(sample)
+            buffer.append(sample)
+            buffer_len += len(sample["input_ids"])
+
+        return buffer, buffer_len
+
+    def _add_separator_token(self, sample):
+        """Adds a separator token to the end of a sample's sequences."""
+        sep_id = self.dataset.tokenizer.pad_token_id
+        sample["input_ids"] = torch.cat([sample["input_ids"], torch.tensor([sep_id])])
+        sample["attention_mask"] = torch.cat(
+            [sample["attention_mask"], torch.tensor([0])]
+        )
+        sample["labels"] = torch.cat([sample["labels"], torch.tensor([-100])])
+
+    def _pack_buffer(self, buffer):
+        """Packs the buffer into groups using a greedy knapsack algorithm."""
+        return self._balanced_greedy_knapsack(
+            buffer,
+            L=self.seq_length,
+            delta=self.delta,
+            max_images_per_knapsack=self.max_images_per_knapsack,
+        )
+
+    def _format_group(self, group, buffer):
+        """Formats a group of samples into a single packed dictionary."""
+        ids, lbl, attn, imgs = self._pack_one_group(group, buffer, self.seq_length)
+        return {
+            "input_ids": ids,
+            "labels": lbl,
+            "attention_mask": attn,
+            "images": imgs,
+        }
+
     @staticmethod
     def _balanced_greedy_knapsack(
         buffer: List[dict],
@@ -164,49 +140,45 @@ class NaiveConstantLengthDataset(IterableDataset):
         delta: int = 0,
         max_images_per_knapsack: int | None = None,
     ) -> List[List[int]]:
-        """Return list of index-groups; each group fits length & image budgets."""
+        """
+        Packs items into bins of capacity L using a greedy approach.
+
+        Returns a list of groups, where each group is a list of indices into the buffer.
+        """
         lengths = [len(x["input_ids"]) for x in buffer]
         img_counts = [len(x["images"]) for x in buffer]
-
-        # sort by decreasing length, keep original index
         items = sorted(
-            enumerate(zip(lengths, img_counts)),
-            key=lambda x: x[1][0],
-            reverse=True,
+            enumerate(zip(lengths, img_counts)), key=lambda x: x[1][0], reverse=True
         )
 
         min_bins = (sum(lengths) + L - 1) // L + delta
-        bin_load = [0] * min_bins
-        bin_imgs = [0] * min_bins
-        groups: List[List[int]] = [[] for _ in range(min_bins)]
+        bins = [{"load": 0, "images": 0, "indices": []} for _ in range(min_bins)]
 
         for idx, (tok_len, n_imgs) in items:
-            target = None
-            # try lightest bins first → more balanced fill
-            for b in sorted(range(len(bin_load)), key=bin_load.__getitem__):
-                fits_len = bin_load[b] + tok_len <= L
-                fits_img = (
+            target_bin = None
+            for b in sorted(range(len(bins)), key=lambda i: bins[i]["load"]):
+                if bins[b]["load"] + tok_len <= L and (
                     max_images_per_knapsack is None
-                    or bin_imgs[b] + n_imgs <= max_images_per_knapsack
-                )
-                if fits_len and fits_img:
-                    target = b
+                    or bins[b]["images"] + n_imgs <= max_images_per_knapsack
+                ):
+                    target_bin = b
                     break
-            if target is None:
-                target = len(bin_load)
-                bin_load.append(0)
-                bin_imgs.append(0)
-                groups.append([])
-            groups[target].append(idx)
-            bin_load[target] += tok_len
-            bin_imgs[target] += n_imgs
 
-        random.shuffle(groups)  # avoid length ordering bias
-        return [g for g in groups if g]  # drop empties
+            if target_bin is None:
+                bins.append({"load": 0, "images": 0, "indices": []})
+                target_bin = len(bins) - 1
+
+            bins[target_bin]["indices"].append(idx)
+            bins[target_bin]["load"] += tok_len
+            bins[target_bin]["images"] += n_imgs
+
+        groups = [b["indices"] for b in bins if b["indices"]]
+        random.shuffle(groups)
+        return groups
 
     @staticmethod
     def _pack_one_group(group: List[int], buffer: List[dict], L: int):
-        """Concatenate members of `group` and return constant-length tensors."""
+        """Concatenates samples in a group and pads to a constant length."""
         ids, lbl, attn, imgs = [], [], [], []
         for i in group:
             ids.extend(buffer[i]["input_ids"])
@@ -217,26 +189,30 @@ class NaiveConstantLengthDataset(IterableDataset):
         if len(ids) > L:
             raise ValueError(f"Packed length {len(ids)} exceeds limit {L}")
 
-        # convert lists → tensors and pad on the *left* (in-place training style)
-        pad_id = buffer[0]["input_ids"].new_full((L - len(ids),), self_pad := 0)
+        pad_id = buffer[0]["input_ids"].new_full((L - len(ids),), 0)
         pad_lbl = buffer[0]["labels"].new_full((L - len(lbl),), -100)
         pad_att = buffer[0]["attention_mask"].new_full((L - len(attn),), 0)
 
-        ids = torch.cat([pad_id, torch.stack(ids)])
-        lbl = torch.cat([pad_lbl, torch.stack(lbl)])
-        attn = torch.cat([pad_att, torch.stack(attn)])
+        ids_tensor = torch.cat([pad_id, torch.tensor(ids)])
+        lbl_tensor = torch.cat([pad_lbl, torch.tensor(lbl)])
+        attn_tensor = torch.cat([pad_att, torch.tensor(attn)])
 
-        return ids, lbl, attn, imgs
+        return ids_tensor, lbl_tensor, attn_tensor, imgs
 
 
-# ────────────────────────────────────────────────────────────────────────────────
-# 2.  Producer–consumer version
-# ────────────────────────────────────────────────────────────────────────────────
 class ConstantLengthDataset(NaiveConstantLengthDataset):
     """
-    Same greedy-knapsack packing as NaiveConstantLengthDataset, but carried out
-    **in a background thread with a bounded Queue** so that CPU preprocessing,
-    image loading and knapsack calculations run *while* the GPU trains.
+    An optimized version of `NaiveConstantLengthDataset` that uses a background
+    thread and a queue to pre-fetch and process data.
+
+    This allows the data preparation (I/O, tokenization, packing) to run
+    concurrently with model training on the GPU, which can significantly
+    improve throughput by reducing data loading bottlenecks.
+
+    Args:
+        queue_size (int): The maximum number of packed samples to store in the
+            producer-consumer queue.
+        (Other args are inherited from `NaiveConstantLengthDataset`)
     """
 
     def __init__(
@@ -247,88 +223,48 @@ class ConstantLengthDataset(NaiveConstantLengthDataset):
     ):
         super().__init__(*args, **kwargs)
         self.queue_size = queue_size
-        self._sentinel = object()           # signals producer finished
+        self._sentinel = object()  # Signal for the producer to stop
 
-    # ------------------------------------------------------------------ ITERATOR
     def __iter__(self) -> Iterator[dict]:
-        worker_info = get_worker_info()
-        worker_id = worker_info.id if worker_info else 0
-        num_workers = worker_info.num_workers if worker_info else 1
-
-        def make_base_iter():
-            """Yield raw samples, sharded across DataLoader workers."""
-            indices = range(len(self.dataset))
-            if num_workers > 1:
-                indices = itertools.islice(indices, worker_id, None, num_workers)
-            for i in indices:
-                yield self.dataset[i]
-
+        """
+        Starts a producer thread and yields packed samples from the queue.
+        """
         q: Queue = Queue(maxsize=self.queue_size)
-        prod = threading.Thread(
-            target=self._producer, args=(make_base_iter, q), daemon=True
+        producer_thread = threading.Thread(
+            target=self._producer, args=(q,), daemon=True
         )
-        prod.start()
+        producer_thread.start()
 
         while True:
             item = q.get()
-            if item is self._sentinel:      # producer ran out of data
+            if item is self._sentinel:
                 break
             yield item
 
-    # --------------------------------------------------------------- PRODUCER 👷‍♂️
-    def _producer(self, make_iter, q: Queue):
-        iterator = make_iter()
-        more = True
+    def _producer(self, q: Queue):
+        """
+        The producer function that runs in a separate thread.
+        It fetches, processes, and packs data, then puts the packed samples
+        into the queue for the consumer.
+        """
+        iterator = iter(self.dataset)
 
-        while more:
-            # 1) Fill an in-RAM buffer with ≤ `max_length` tokens
-            buf: List[dict] = []
-            buf_len = 0
-            while buf_len < self.max_length:
-                try:
-                    ex = next(iterator)
-                except StopIteration:
-                    if self.infinite:
-                        iterator = make_iter()
-                        self.epoch += 1
-                        continue
-                    more = False
+        while True:
+            buffer, buffer_len = self._fill_buffer(iterator)
+
+            if not buffer:
+                if not self.infinite:
                     break
+                iterator = iter(self.dataset)
+                self.epoch += 1
+                continue
 
-                if len(ex["input_ids"]) >= self.max_sample_length:
-                    continue
-                if len(ex["images"]) > self.max_images_per_example:
-                    continue
+            groups = self._pack_buffer(buffer)
 
-                # separator so concatenations stay distinct
-                pad_id = self.dataset.tokenizer.pad_token_id
-                ex["input_ids"] = torch.cat([ex["input_ids"], torch.tensor([pad_id])])
-                ex["attention_mask"] = torch.cat([ex["attention_mask"], torch.tensor([0])])
-                ex["labels"] = torch.cat([ex["labels"], torch.tensor([-100])])
+            for group in groups:
+                q.put(self._format_group(group, buffer))
 
-                buf.append(ex)
-                buf_len += len(ex["input_ids"])
-
-            if not buf:
+            if not self.infinite and not buffer:
                 break
 
-            # 2) Greedy knapsack → constant-length chunks
-            groups = self._balanced_greedy_knapsack(
-                buf,
-                L=self.seq_length,
-                delta=self.delta,
-                max_images_per_knapsack=self.max_images_per_knapsack,
-            )
-
-            for g in groups:
-                ids, lbl, attn, imgs = self._pack_one_group(g, buf, self.seq_length)
-                q.put(
-                    {
-                        "input_ids": ids,
-                        "labels": lbl,
-                        "attention_mask": attn,
-                        "images": imgs,
-                    }
-                )
-
-        q.put(self._sentinel)               # unblock consumer when done
+        q.put(self._sentinel)

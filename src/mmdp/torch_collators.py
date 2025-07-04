@@ -74,10 +74,12 @@ class BaseCollator(object):
             "image": list(batch_images),
         }
 
+
 class NaiveCollator(BaseCollator):
     def __call__(self, batch):
         batch = self.prepare_batch(batch=batch)
         return batch
+
 
 class VQACollator(BaseCollator):  # Visual Question Answering Collator
     def __init__(self, tokenizer, max_length):
