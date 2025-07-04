@@ -60,10 +60,9 @@ class BaseDataset(Dataset):
             messages.append({"role": "assistant", "content": text["assistant"]})
 
         # Prepend image tokens to the first message if images are present
+        # Note: We only prepend the first image to the message
         if image_count > 0:
-            image_tokens = (
-                self.tokenizer.image_token * image_count * self.image_token_length
-            )
+            image_tokens = self.tokenizer.image_token * self.image_token_length
             messages[0]["content"] = image_tokens + messages[0]["content"]
 
         return messages
@@ -168,7 +167,9 @@ class VQADataset(BaseDataset):
         labels = self._compute_labels(input_ids, loss_mask)
 
         return {
-            "image": processed_images[0],
+            "image": processed_images[
+                0
+            ],  # Note: Taking only the first image in the list of images
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "labels": labels,

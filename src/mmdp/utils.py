@@ -64,7 +64,7 @@ def visualize_padding(batch, max_len, title, fname):
     batch_size = len(input_ids)
     seq_lengths = attention_masks.sum(dim=1).cpu().numpy()
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    _, ax = plt.subplots(figsize=(10, 6))
 
     y_pos = np.arange(batch_size)
 
