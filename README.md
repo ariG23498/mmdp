@@ -3,7 +3,7 @@
 ## Samlpe from the Hugging Face Dataset
 `uv run 01_check_dataset.py`
 
-![](./sample.png)
+![](./assets/01.png)
 
 ## Pad the Dataset
 `uv run 02_naive_pad_dataloader.py`

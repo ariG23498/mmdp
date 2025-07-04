@@ -2,18 +2,17 @@ import numpy as np
 from matplotlib import pyplot as plt
 
 
-def visualize_sample(sample, figsize=(12, 5), fname="sample.png"):
+def visualize_sample(sample, fname="sample.png"):
     """
     Visualize an image and its associated texts from a dataset sample.
 
     Args:
         sample (dict): Dataset sample containing 'images' and 'texts' keys
-        figsize (tuple): Figure size as (width, height)
         fname (str): Filename to save the figure
     """
     # Create a figure with two subplots (image on left, text on right)
     _, (ax_img, ax_text) = plt.subplots(
-        1, 2, figsize=figsize, gridspec_kw={"width_ratios": [1, 1]}
+        1, 2, figsize=(10, 6), gridspec_kw={"width_ratios": [1, 1]}
     )
 
     # Plot the image (assuming single image in sample['images'])
@@ -46,6 +45,7 @@ def visualize_sample(sample, figsize=(12, 5), fname="sample.png"):
     plt.tight_layout()
     plt.savefig(fname)
     plt.close()
+    print(f"Saved padding visualization to {fname}")
 
 
 def visualize_padding(batch, max_len, title, fname):

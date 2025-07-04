@@ -13,4 +13,4 @@ if __name__ == "__main__":
 
     # Samples one data point from the dataset at random and visualizes it
     sample = choice(train_ds)
-    visualize_sample(sample, fname="01.png")
+    visualize_sample(sample, fname="assets/01.png")
