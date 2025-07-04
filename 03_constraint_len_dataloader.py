@@ -30,10 +30,13 @@ if __name__ == "__main__":
     )
 
     # Use the VQACollator that sets the maximum length to pad each batch
+    # Providing max length does two things
+    # 1. Removes a sample from the minibatch that is bigger than max legth
+    # 2. Pads till the max length
     vqa_collator = VQACollator(tokenizer=tokenizer, max_length=config.lm_max_length)
     train_dataloader = DataLoader(
         dataset=train_dataset,
-        batch_size=8,
+        batch_size=config.batch_size,
         collate_fn=vqa_collator,
     )
 
@@ -50,5 +53,5 @@ if __name__ == "__main__":
         sample_batch,
         config.lm_max_length,
         title=f"Constraint Padding: Padded to Fixed Max Length ({config.lm_max_length})",
-        fname="03.png",
+        fname="assets/03.png",
     )

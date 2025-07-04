@@ -15,6 +15,8 @@ images torch.Size([8, 3, 256, 256])
 labels torch.Size([8, 762])
 ```
 
+![](./assets/02.png)
+
 ## Pad the Dataset to a constant length
 `uv run 03_constraint_len_dataloader.py`
 
@@ -24,3 +26,5 @@ attention_masks torch.Size([8, 1024])
 images torch.Size([8, 3, 256, 256])
 labels torch.Size([8, 1024])
 ```
+
+![](./assets/03.png)
