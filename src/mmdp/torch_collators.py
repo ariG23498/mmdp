@@ -28,11 +28,11 @@ class BaseCollator(object):
         # "input_ids": Tensor
         # "attention_mask": Tensor
         # "labels": Tensor
-        # "image": Tensor
+        # "images": List of images
         # We will first convert the batch into a dictionary of lists
         batch = {
             key: [item[key] for item in batch]
-            for key in ["input_ids", "attention_mask", "labels", "image"]
+            for key in ["input_ids", "attention_mask", "labels", "images"]
         }
 
         if max_length is not None:
@@ -49,7 +49,7 @@ class BaseCollator(object):
         return {
             "input_ids": torch.stack(batch["input_ids"]),
             "attention_masks": torch.stack(batch["attention_mask"]),
-            "images": torch.stack(batch["image"]),
+            "images": batch["images"],
             "labels": torch.stack(batch["labels"]),
         }
 
@@ -60,7 +60,7 @@ class BaseCollator(object):
                 batch["input_ids"],
                 batch["labels"],
                 batch["attention_mask"],
-                batch["image"],
+                batch["images"],
             )
             if len(ids) <= max_length
         ]
@@ -71,7 +71,7 @@ class BaseCollator(object):
             "input_ids": list(batch_token_ids),
             "labels": list(batch_labels),
             "attention_mask": list(batch_attentions),
-            "image": list(batch_images),
+            "images": list(batch_images),
         }
 
 

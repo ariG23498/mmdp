@@ -43,7 +43,10 @@ if __name__ == "__main__":
     # Showcase the batch elements and the shape
     sample_batch = next(iter(train_dataloader))
     for key, value in sample_batch.items():
-        print(key, value.shape)
+        if isinstance(value, list):
+            print(key, len(value))
+        else:
+            print(key, value.shape)
 
     # Visualize the padding
     max_len = sample_batch["input_ids"].shape[1]

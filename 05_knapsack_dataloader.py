@@ -1,12 +1,15 @@
+import os
+
+os.environ["TOKENIZERS_PARALLELISM"] = "true"
 from datasets import load_dataset
 from torch.utils.data import DataLoader
 
 from mmdp import config
-from mmdp.advanced_torch_datasets import NaiveConstantLengthDataset
+from mmdp.advanced_torch_datasets import ConstantLengthDataset
 from mmdp.processors import get_image_processor, get_tokenizer
 from mmdp.torch_collators import VQACollator
 from mmdp.torch_datasets import VQADataset
-from mmdp.utils import visualize_knapsack_packing
+from mmdp.utils import visualize_padding
 
 if __name__ == "__main__":
     # Get the image processor and the text tokenizer
@@ -36,23 +39,23 @@ if __name__ == "__main__":
 
     # Wrap the map styled dataset into an iterable dataset which uses knapsack
     # to pack each data point into the maximum length provided
-    packed_ds = NaiveConstantLengthDataset(
-        dataset=train_dataset,
-        seq_length=config.lm_max_length,
-        num_sequences=config.num_sequences,
+    packed_ds = ConstantLengthDataset(
+        train_dataset,
+        infinite=False,
         max_sample_length=config.max_sample_length,
+        seq_length=config.lm_max_length,
+        num_of_sequences=config.batch_size * 64,
+        queue_size=config.batch_size * 64 * 2,
         max_images_per_example=config.max_images_per_example,
         max_images_per_knapsack=config.max_images_per_knapsack,
-        delta=5,
-        infinite=False,
     )
 
     vqa_collator = VQACollator(tokenizer, config.lm_max_length)
     train_dataloader = DataLoader(
-        train_dataset,
+        packed_ds,
         batch_size=config.batch_size,  # =per device BS in DDP
         collate_fn=vqa_collator,
-        pin_memory=True,
+        num_workers=2,
         drop_last=True,
     )
 
@@ -63,10 +66,10 @@ if __name__ == "__main__":
         else:
             print(key, value.shape)
 
-    # Visualize the knapsack packing
-    visualize_knapsack_packing(
+    # Visualize the padding
+    visualize_padding(
         sample_batch,
-        seq_length=config.lm_max_length,
-        title=f"Knapsack Packing: Samples Packed into Fixed Length ({config.lm_max_length})",
-        fname="04.png",
+        config.lm_max_length,
+        title=f"Knapsack Padding: Padded to Fixed Max Length ({config.lm_max_length})",
+        fname="assets/05.png",
     )

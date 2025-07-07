@@ -167,9 +167,7 @@ class VQADataset(BaseDataset):
         labels = self._compute_labels(input_ids, loss_mask)
 
         return {
-            "image": processed_images[
-                0
-            ],  # Note: Taking only the first image in the list of images
+            "images": processed_images,
             "input_ids": input_ids,
             "attention_mask": attention_mask,
             "labels": labels,
