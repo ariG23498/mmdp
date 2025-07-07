@@ -24,16 +24,18 @@ def visualize_sample(sample, fname="sample.png"):
 
     # Display texts (concatenate all text entries)
     if sample["texts"]:
-        text_content = ""
+        lines = []
         for text_item in sample["texts"]:
-            text_content += f"\nUser: {text_item['user']}"
-            text_content += f"\nAssistant: {text_item['assistant']}\n\n"
+            lines.append(r"$\bf{User}$" + "\n" + text_item["user"].strip())
+            lines.append("\n" + r"$\bf{Assistant}$" + "\n" + text_item["assistant"].strip() + "\n")
+
+        full_text = "\n".join(lines).strip()
 
         # Display text in the right subplot
         ax_text.text(
             0.05,
             0.95,
-            text_content.strip(),
+            full_text,
             verticalalignment="top",
             horizontalalignment="left",
             fontsize=10,
@@ -92,3 +94,4 @@ def visualize_padding(batch, max_len, title, fname):
     plt.savefig(fname)
     plt.close()
     print(f"Saved padding visualization to {fname}")
+
