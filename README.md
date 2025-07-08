@@ -1,5 +1,8 @@
 # MultiModal Data Pipeline
 
+> [!NOTE]
+> Official Blog Post: https://huggingface.co/blog/mmdp
+
 ## Stage 1: Checking the dataset
 
 At this stage we check out the dataset (map styled) that we will work on.
